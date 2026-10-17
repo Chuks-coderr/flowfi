@@ -11,9 +11,16 @@ e2e-results
 **/test_snapshots/
 .npm-cache/
 
+# Proptest auto-generated regression corpus — regenerated on each run, never commit
+**/proptest-regressions/
+
 # Scratch / draft markdown files — never commit
 fix.md
 issue*.md
 pr*.md
 ISSUE_*.md
 PR_*.md
+docs-issue-*.md
+PR_DESCRIPTION_*.md
+FRONTEND_UX_IMPROVEMENTS.md
+pr_*.txt

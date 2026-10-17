@@ -6315,3 +6315,338 @@ mod emit_helpers {
         assert_eq!(payload.refunded_amount, 2_500);
     }
 }
+
+// ─── Issue #37: Fee Governance Tests ──────────────────────────────────────────
+//
+// These tests document the fee governance guardrails defined in ADR-0005.
+// Key invariants:
+//   - 0 bps (zero fee) is explicitly permitted.
+//   - 1 000 bps is the hard upper boundary (MAX_FEE_RATE_BPS).
+//   - 1 001 bps and above are rejected with `InvalidFeeRate`.
+//   - Changing the fee never retroactively alters an existing stream's
+//     `deposited_amount` — the fee is snapshotted at creation / top-up time.
+//   - Only the admin may call `update_fee_config`.
+
+#[test]
+fn fee_rate_zero_bps_is_allowed() {
+    // 0 bps = zero-fee operation is explicitly permitted.
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let (token, _) = create_token(&env);
+    let c = create_contract(&env);
+    c.initialize(&admin, &treasury, &0);
+
+    let sender = Address::generate(&env);
+    mint(&env, &token, &sender, 1_000);
+    let id = c.create_stream(&sender, &Address::generate(&env), &token, &1_000, &100);
+    let stream = c.get_stream(&id).unwrap();
+    // Zero fee → full amount deposited to stream (no deduction).
+    assert_eq!(stream.deposited_amount, 1_000);
+}
+
+#[test]
+fn fee_rate_max_boundary_1000_bps_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let c = create_contract(&env);
+    c.initialize(&admin, &treasury, &0);
+    // 1 000 bps is the maximum — must succeed.
+    assert!(c.try_update_fee_config(&admin, &treasury, &1_000).is_ok());
+    let cfg = c.get_fee_config().unwrap();
+    assert_eq!(cfg.fee_rate_bps, 1_000);
+}
+
+#[test]
+fn fee_rate_above_max_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let c = create_contract(&env);
+    c.initialize(&admin, &treasury, &0);
+    // 1 001 bps is over the limit — must be rejected.
+    assert_stream_error!(
+        c.try_update_fee_config(&admin, &treasury, &1_001),
+        StreamError::InvalidFeeRate
+    );
+}
+
+#[test]
+fn update_fee_config_requires_admin_auth() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let c = create_contract(&env);
+    c.initialize(&admin, &treasury, &0);
+    // Non-admin must not update fee config.
+    assert_stream_error!(
+        c.try_update_fee_config(&attacker, &treasury, &100),
+        StreamError::NotAdmin
+    );
+}
+
+#[test]
+fn fee_change_does_not_affect_existing_stream_balance() {
+    // Existing streams snapshot the fee at creation time.
+    // Changing the fee afterwards must not retroactively alter deposited_amount.
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let (token, _) = create_token(&env);
+    let c = create_contract(&env);
+    c.initialize(&admin, &treasury, &100); // 1% fee at creation
+
+    let sender = Address::generate(&env);
+    mint(&env, &token, &sender, 1_000);
+    let id = c.create_stream(&sender, &Address::generate(&env), &token, &1_000, &100);
+    let before = c.get_stream(&id).unwrap().deposited_amount;
+
+    // Raise the fee to 500 bps — existing stream must be unaffected.
+    c.update_fee_config(&admin, &treasury, &500);
+    let after = c.get_stream(&id).unwrap().deposited_amount;
+
+    assert_eq!(before, after, "fee change must not alter existing stream balance");
+}
+
+#[test]
+fn subsequent_stream_uses_new_fee_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let (token, _) = create_token(&env);
+    let c = create_contract(&env);
+    c.initialize(&admin, &treasury, &0); // 0 fee initially
+
+    let sender = Address::generate(&env);
+    mint(&env, &token, &sender, 2_000);
+
+    // Stream created at 0 fee → gets full amount.
+    let id1 = c.create_stream(&sender, &Address::generate(&env), &token, &1_000, &100);
+    let dep1 = c.get_stream(&id1).unwrap().deposited_amount;
+
+    // Raise fee to 100 bps (1%).
+    c.update_fee_config(&admin, &treasury, &100);
+
+    // Next stream must reflect the updated fee.
+    let id2 = c.create_stream(&sender, &Address::generate(&env), &token, &1_000, &100);
+    let dep2 = c.get_stream(&id2).unwrap().deposited_amount;
+
+    assert_eq!(dep1, 1_000, "zero-fee stream should receive full amount");
+    assert!(dep2 < 1_000, "new stream must reflect the updated fee rate");
+}
+
+#[test]
+fn treasury_change_while_zero_fee_still_works() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let new_treasury = Address::generate(&env);
+    let c = create_contract(&env);
+    c.initialize(&admin, &treasury, &0);
+
+    // Changing treasury while fee_rate stays at 0 must succeed.
+    assert!(c.try_update_fee_config(&admin, &new_treasury, &0).is_ok());
+
+    let cfg = c.get_fee_config().unwrap();
+    assert_eq!(cfg.treasury, new_treasury);
+    assert_eq!(cfg.fee_rate_bps, 0);
+}
+
+// ─── Issue #38: Emergency Controls Tests ──────────────────────────────────────
+//
+// These tests verify the asymmetric circuit-breaker behaviour documented in
+// docs/contracts/EMERGENCY_CONTROLS.md:
+//   - The guardian may ONLY pause; it cannot unpause.
+//   - Only the admin may unpause.
+//   - Token-in entrypoints (`create_stream`) are blocked while paused.
+//   - Token-out entrypoints (`withdraw`, `cancel_stream`) remain open — funds
+//     are never trapped.
+//   - After an admin unpause, normal operation is fully restored.
+//   - Removing the guardian revokes its pause authority immediately.
+
+#[test]
+fn guardian_can_pause_but_not_unpause() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let c = create_contract(&env);
+    c.initialize(&admin, &treasury, &0);
+    c.set_emergency_guardian(&admin, &Some(guardian.clone()));
+
+    // Guardian can trip the circuit breaker.
+    assert!(c.try_set_protocol_pause(&guardian, &true).is_ok());
+    assert!(c.is_protocol_paused());
+
+    // Guardian cannot clear it (asymmetric authority).
+    assert_stream_error!(
+        c.try_set_protocol_pause(&guardian, &false),
+        StreamError::NotAdmin
+    );
+    assert!(c.is_protocol_paused(), "protocol should still be paused after guardian's failed unpause attempt");
+
+    // Admin can clear it.
+    assert!(c.try_set_protocol_pause(&admin, &false).is_ok());
+    assert!(!c.is_protocol_paused());
+}
+
+#[test]
+fn admin_can_pause_and_unpause() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let c = create_contract(&env);
+    c.initialize(&admin, &treasury, &0);
+
+    assert!(c.try_set_protocol_pause(&admin, &true).is_ok());
+    assert!(c.is_protocol_paused());
+
+    assert!(c.try_set_protocol_pause(&admin, &false).is_ok());
+    assert!(!c.is_protocol_paused());
+}
+
+#[test]
+fn without_guardian_only_admin_can_pause() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let outsider = Address::generate(&env);
+    let c = create_contract(&env);
+    c.initialize(&admin, &treasury, &0);
+    // No guardian set; outsider cannot pause.
+    assert_stream_error!(
+        c.try_set_protocol_pause(&outsider, &true),
+        StreamError::NotGuardian
+    );
+}
+
+#[test]
+fn paused_protocol_blocks_create_stream() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let (token, _) = create_token(&env);
+    let c = create_contract(&env);
+    c.initialize(&admin, &treasury, &0);
+    c.set_protocol_pause(&admin, &true);
+
+    let sender = Address::generate(&env);
+    mint(&env, &token, &sender, 1_000);
+    // create_stream must be blocked while protocol is paused.
+    assert_stream_error!(
+        c.try_create_stream(&sender, &Address::generate(&env), &token, &1_000, &100),
+        StreamError::ProtocolPaused
+    );
+}
+
+#[test]
+fn paused_protocol_allows_withdraw() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let (token, _) = create_token(&env);
+    let c = create_contract(&env);
+    c.initialize(&admin, &treasury, &0);
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    mint(&env, &token, &sender, 1_000);
+    let id = c.create_stream(&sender, &recipient, &token, &1_000, &100);
+
+    // Advance time so the recipient has a claimable amount.
+    env.ledger().with_mut(|l| l.timestamp += 50);
+
+    // Pause the protocol.
+    c.set_protocol_pause(&admin, &true);
+
+    // Withdraw must still succeed — funds are never trapped during a pause.
+    let withdrawn = c.withdraw(&recipient, &id);
+    assert!(withdrawn > 0, "recipient must still be able to withdraw while protocol is paused");
+}
+
+#[test]
+fn paused_protocol_allows_cancel_stream() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let (token, _) = create_token(&env);
+    let c = create_contract(&env);
+    c.initialize(&admin, &treasury, &0);
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    mint(&env, &token, &sender, 1_000);
+    let id = c.create_stream(&sender, &recipient, &token, &1_000, &100);
+
+    // Pause the protocol.
+    c.set_protocol_pause(&admin, &true);
+
+    // Cancel must still succeed — the sender can always reclaim unstreamed funds.
+    c.cancel_stream(&sender, &id);
+    let stream = c.get_stream(&id).unwrap();
+    assert_eq!(stream.status, StreamStatus::Cancelled);
+}
+
+#[test]
+fn recovery_unpause_restores_create_stream() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let (token, _) = create_token(&env);
+    let c = create_contract(&env);
+    c.initialize(&admin, &treasury, &0);
+
+    let sender = Address::generate(&env);
+    mint(&env, &token, &sender, 2_000);
+
+    // Pause — create_stream is blocked.
+    c.set_protocol_pause(&admin, &true);
+    assert!(
+        c.try_create_stream(&sender, &Address::generate(&env), &token, &1_000, &100).is_err(),
+        "create_stream must fail while paused"
+    );
+
+    // Unpause — create_stream must work again.
+    c.set_protocol_pause(&admin, &false);
+    assert!(
+        c.try_create_stream(&sender, &Address::generate(&env), &token, &1_000, &100).is_ok(),
+        "create_stream must succeed after admin unpauses"
+    );
+}
+
+#[test]
+fn removed_guardian_can_no_longer_pause() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let c = create_contract(&env);
+    c.initialize(&admin, &treasury, &0);
+    c.set_emergency_guardian(&admin, &Some(guardian.clone()));
+
+    // Remove the guardian role.
+    c.set_emergency_guardian(&admin, &None);
+
+    // The former guardian must no longer be able to pause.
+    assert_stream_error!(
+        c.try_set_protocol_pause(&guardian, &true),
+        StreamError::NotGuardian
+    );
+}
