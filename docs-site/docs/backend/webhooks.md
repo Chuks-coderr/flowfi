@@ -30,14 +30,79 @@ sequenceDiagram
     Note over D: operator triage via /admin
 ```
 
-## Verifying signatures
+## Canonical serialization
+
+The signature is computed over the **raw request body bytes exactly as sent**.
+To make the signed bytes reproducible, the body is serialized as canonical
+JSON:
+
+- Object keys are sorted lexicographically (by Unicode code point) at every
+  nesting level.
+- No insignificant whitespace (no spaces, newlines, or tabs between tokens).
+- Strings use standard JSON escaping; numbers use the shortest round-trippable
+  representation; `null` is preserved.
+- Arrays keep their original order.
+
+Integrators should verify against the raw bytes they received, **not** against a
+re-serialization of the parsed JSON. If you must re-serialize (e.g. to compare
+against a stored copy), apply the same canonicalization rules above.
+
+## Signature header format
+
+Every delivery carries a single `X-FlowFi-Signature` header with a
+comma-separated list of key/value pairs:
+
+```
+X-FlowFi-Signature: t=1700000000,v1=<hex-hmac>,kid=<key-id>
+```
+
+| Field | Meaning |
+| ----- | ------- |
+| `t`   | Unix timestamp (seconds) when the signature was produced. |
+| `v1`  | Lowercase hex HMAC-SHA256 over `"<t>.<raw_body>"` using the subscriber secret identified by `kid`. |
+| `kid` | Identifier of the signing key. Lets you select the right secret during rotation. |
+
+The signed message is the ASCII timestamp, a literal `.`, then the raw body
+bytes:
+
+```
+signed_payload = ascii(t) + "." + raw_body
+v1 = hex(HMAC_SHA256(secret_for(kid), signed_payload))
+```
+
+### Verifying signatures
 
 ```python
-import hmac, hashlib
+import hmac, hashlib, time
 
-def verify(secret: str, raw_body: bytes, header: str) -> bool:
-    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, header.removeprefix("sha256="))
+TOLERANCE_SECONDS = 300  # 5 minutes
+
+def parse_header(header: str) -> dict:
+    parts = {}
+    for pair in header.split(","):
+        key, _, value = pair.strip().partition("=")
+        parts[key] = value
+    return parts
+
+def verify(secret_for_kid, raw_body: bytes, header: str, now: int | None = None) -> bool:
+    parts = parse_header(header)
+    t = parts.get("t")
+    v1 = parts.get("v1")
+    kid = parts.get("kid")
+    if not (t and v1 and kid):
+        return False
+
+    now = int(time.time()) if now is None else now
+    if abs(now - int(t)) > TOLERANCE_SECONDS:
+        return False  # expired / clock skew beyond tolerance
+
+    secret = secret_for_kid(kid)
+    if secret is None:
+        return False  # unknown key id
+
+    signed = f"{t}.".encode() + raw_body
+    expected = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, v1)
 ```
 
 ## Endpoint lifecycle
