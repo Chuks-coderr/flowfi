@@ -112,6 +112,9 @@ pub enum StreamError {
     /// The conditional milestone list would exceed
     /// `MAX_CONDITIONAL_MILESTONES`.
     TooManyMilestones = 44,
+    /// The token contract at the given address does not implement the required
+    /// SEP-0041 interface, or the address is otherwise incompatible.
+    IncompatibleToken = 45,
 }
 
 // ─── Test diagnostics (compiled only under `cfg(test)`) ───────────────────
@@ -179,6 +182,7 @@ pub(crate) mod test_diagnostics {
                 StreamError::InvalidAttestation => "InvalidAttestation",
                 StreamError::MilestoneCallerUnauthorized => "MilestoneCallerUnauthorized",
                 StreamError::TooManyMilestones => "TooManyMilestones",
+                StreamError::IncompatibleToken => "IncompatibleToken",
             }
         }
     }

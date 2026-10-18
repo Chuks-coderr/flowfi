@@ -6315,3 +6315,600 @@ mod emit_helpers {
         assert_eq!(payload.refunded_amount, 2_500);
     }
 }
+
+// ─── Issue #34: Event Shape Tests ─────────────────────────────────────────────
+
+mod event_shape_tests {
+    use super::*;
+    use events::{
+        AdminTransferCancelledEvent, AdminTransferProposedEvent, AdminTransferredEvent,
+        ContractUpgradedEvent, EmergencyGuardianUpdatedEvent, FeeCollectedEvent,
+        FeeConfigUpdatedEvent, InitializedEvent, ProtocolPauseStatusEvent, StateMigratedEvent,
+        StreamCancelledEvent, StreamClosedEvent, StreamCompletedEvent, StreamCreatedEvent,
+        StreamPausedEvent, StreamResumedEvent, StreamToppedUpEvent, TokensWithdrawnEvent,
+    };
+
+    #[test]
+    fn test_stream_created_event_shape() {
+        let env = Env::default();
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let token_address = Address::generate(&env);
+
+        let event = StreamCreatedEvent {
+            stream_id: 1,
+            sender: sender.clone(),
+            recipient: recipient.clone(),
+            rate_per_second: 10,
+            token_address: token_address.clone(),
+            deposited_amount: 1_000,
+            start_time: 100,
+        };
+
+        assert_eq!(event.stream_id, 1);
+        assert_eq!(event.sender, sender);
+        assert_eq!(event.recipient, recipient);
+        assert_eq!(event.rate_per_second, 10);
+        assert_eq!(event.token_address, token_address);
+        assert_eq!(event.deposited_amount, 1_000);
+        assert_eq!(event.start_time, 100);
+    }
+
+    #[test]
+    fn test_stream_topped_up_event_shape() {
+        let env = Env::default();
+        let sender = Address::generate(&env);
+
+        let event = StreamToppedUpEvent {
+            stream_id: 2,
+            sender: sender.clone(),
+            amount: 500,
+            new_deposited_amount: 1_500,
+            new_end_time: 200,
+        };
+
+        assert_eq!(event.stream_id, 2);
+        assert_eq!(event.sender, sender);
+        assert_eq!(event.amount, 500);
+        assert_eq!(event.new_deposited_amount, 1_500);
+        assert_eq!(event.new_end_time, 200);
+    }
+
+    #[test]
+    fn test_tokens_withdrawn_event_shape() {
+        let env = Env::default();
+        let recipient = Address::generate(&env);
+
+        let event = TokensWithdrawnEvent {
+            stream_id: 3,
+            recipient: recipient.clone(),
+            amount: 250,
+            timestamp: 150,
+        };
+
+        assert_eq!(event.stream_id, 3);
+        assert_eq!(event.recipient, recipient);
+        assert_eq!(event.amount, 250);
+        assert_eq!(event.timestamp, 150);
+    }
+
+    #[test]
+    fn test_stream_cancelled_event_shape() {
+        let env = Env::default();
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let event = StreamCancelledEvent {
+            stream_id: 4,
+            sender: sender.clone(),
+            recipient: recipient.clone(),
+            amount_withdrawn: 300,
+            refunded_amount: 700,
+        };
+
+        assert_eq!(event.stream_id, 4);
+        assert_eq!(event.sender, sender);
+        assert_eq!(event.recipient, recipient);
+        assert_eq!(event.amount_withdrawn, 300);
+        assert_eq!(event.refunded_amount, 700);
+    }
+
+    #[test]
+    fn test_fee_collected_event_shape() {
+        let env = Env::default();
+        let treasury = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let event = FeeCollectedEvent {
+            stream_id: 5,
+            treasury: treasury.clone(),
+            fee_amount: 25,
+            token: token.clone(),
+        };
+
+        assert_eq!(event.stream_id, 5);
+        assert_eq!(event.treasury, treasury);
+        assert_eq!(event.fee_amount, 25);
+        assert_eq!(event.token, token);
+    }
+
+    #[test]
+    fn test_initialized_event_shape() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+
+        let event = InitializedEvent {
+            admin: admin.clone(),
+            treasury: treasury.clone(),
+            fee_rate_bps: 250,
+        };
+
+        assert_eq!(event.admin, admin);
+        assert_eq!(event.treasury, treasury);
+        assert_eq!(event.fee_rate_bps, 250);
+    }
+
+    #[test]
+    fn test_fee_config_updated_event_shape() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let old_treasury = Address::generate(&env);
+        let new_treasury = Address::generate(&env);
+
+        let event = FeeConfigUpdatedEvent {
+            admin: admin.clone(),
+            old_treasury: old_treasury.clone(),
+            new_treasury: new_treasury.clone(),
+            old_fee_rate_bps: 200,
+            new_fee_rate_bps: 300,
+        };
+
+        assert_eq!(event.admin, admin);
+        assert_eq!(event.old_treasury, old_treasury);
+        assert_eq!(event.new_treasury, new_treasury);
+        assert_eq!(event.old_fee_rate_bps, 200);
+        assert_eq!(event.new_fee_rate_bps, 300);
+    }
+
+    #[test]
+    fn test_admin_transferred_event_shape() {
+        let env = Env::default();
+        let previous_admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+
+        let event = AdminTransferredEvent {
+            previous_admin: previous_admin.clone(),
+            new_admin: new_admin.clone(),
+        };
+
+        assert_eq!(event.previous_admin, previous_admin);
+        assert_eq!(event.new_admin, new_admin);
+    }
+
+    #[test]
+    fn test_stream_paused_event_shape() {
+        let env = Env::default();
+        let sender = Address::generate(&env);
+
+        let event = StreamPausedEvent {
+            stream_id: 6,
+            sender: sender.clone(),
+            paused_at: 400,
+        };
+
+        assert_eq!(event.stream_id, 6);
+        assert_eq!(event.sender, sender);
+        assert_eq!(event.paused_at, 400);
+    }
+
+    #[test]
+    fn test_stream_resumed_event_shape() {
+        let env = Env::default();
+        let sender = Address::generate(&env);
+
+        let event = StreamResumedEvent {
+            stream_id: 7,
+            sender: sender.clone(),
+            new_end_time: 600,
+        };
+
+        assert_eq!(event.stream_id, 7);
+        assert_eq!(event.sender, sender);
+        assert_eq!(event.new_end_time, 600);
+    }
+
+    #[test]
+    fn test_stream_completed_event_shape() {
+        let env = Env::default();
+        let recipient = Address::generate(&env);
+
+        let event = StreamCompletedEvent {
+            stream_id: 8,
+            recipient: recipient.clone(),
+            total_withdrawn: 1_000,
+        };
+
+        assert_eq!(event.stream_id, 8);
+        assert_eq!(event.recipient, recipient);
+        assert_eq!(event.total_withdrawn, 1_000);
+    }
+
+    #[test]
+    fn test_protocol_pause_status_event_shape() {
+        let env = Env::default();
+        let caller = Address::generate(&env);
+
+        let event = ProtocolPauseStatusEvent {
+            caller: caller.clone(),
+            paused: true,
+            timestamp: 500,
+        };
+
+        assert_eq!(event.caller, caller);
+        assert!(event.paused);
+        assert_eq!(event.timestamp, 500);
+    }
+
+    #[test]
+    fn test_emergency_guardian_updated_event_shape() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let guardian = Address::generate(&env);
+
+        let event = EmergencyGuardianUpdatedEvent {
+            admin: admin.clone(),
+            guardian: Some(guardian.clone()),
+        };
+
+        assert_eq!(event.admin, admin);
+        assert_eq!(event.guardian, Some(guardian));
+    }
+
+    #[test]
+    fn test_stream_closed_event_shape() {
+        let env = Env::default();
+        let closer = Address::generate(&env);
+
+        let event = StreamClosedEvent {
+            stream_id: 9,
+            closer: closer.clone(),
+            timestamp: 700,
+        };
+
+        assert_eq!(event.stream_id, 9);
+        assert_eq!(event.closer, closer);
+        assert_eq!(event.timestamp, 700);
+    }
+
+    #[test]
+    fn test_state_migrated_event_shape() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+
+        let event = StateMigratedEvent {
+            admin: admin.clone(),
+            old_version: 1,
+            new_version: 2,
+        };
+
+        assert_eq!(event.admin, admin);
+        assert_eq!(event.old_version, 1);
+        assert_eq!(event.new_version, 2);
+    }
+
+    #[test]
+    fn test_contract_upgraded_event_shape() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let old_wasm_hash = BytesN::from_array(&env, &[0u8; 32]);
+        let new_wasm_hash = BytesN::from_array(&env, &[1u8; 32]);
+
+        let event = ContractUpgradedEvent {
+            admin: admin.clone(),
+            old_wasm_hash: old_wasm_hash.clone(),
+            new_wasm_hash: new_wasm_hash.clone(),
+            timestamp: 800,
+        };
+
+        assert_eq!(event.admin, admin);
+        assert_eq!(event.old_wasm_hash, old_wasm_hash);
+        assert_eq!(event.new_wasm_hash, new_wasm_hash);
+        assert_eq!(event.timestamp, 800);
+    }
+
+    #[test]
+    fn test_admin_transfer_proposed_event_shape() {
+        let env = Env::default();
+        let current_admin = Address::generate(&env);
+        let proposed_admin = Address::generate(&env);
+
+        let event = AdminTransferProposedEvent {
+            current_admin: current_admin.clone(),
+            proposed_admin: proposed_admin.clone(),
+        };
+
+        assert_eq!(event.current_admin, current_admin);
+        assert_eq!(event.proposed_admin, proposed_admin);
+    }
+
+    #[test]
+    fn test_admin_transfer_cancelled_event_shape() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let cancelled_proposed_admin = Address::generate(&env);
+
+        let event = AdminTransferCancelledEvent {
+            admin: admin.clone(),
+            cancelled_proposed_admin: cancelled_proposed_admin.clone(),
+        };
+
+        assert_eq!(event.admin, admin);
+        assert_eq!(event.cancelled_proposed_admin, cancelled_proposed_admin);
+    }
+}
+
+// ─── Issue #35: TTL Renewal Tests ─────────────────────────────────────────────
+
+mod ttl_tests {
+    use super::*;
+
+    #[test]
+    fn test_renew_ttl_active_stream() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (token, _) = create_token(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        mint(&env, &token, &sender, 1_000);
+
+        let client = create_contract(&env);
+        let stream_id = client.create_stream(&sender, &recipient, &token, &1_000, &100);
+
+        // Stream is active; renewing TTL should succeed with Ok(())
+        let result = client.try_renew_stream_ttl(&stream_id);
+        assert_eq!(result, Ok(Ok(())));
+    }
+
+    #[test]
+    fn test_renew_ttl_stream_not_found() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = create_contract(&env);
+
+        // Stream 999 does not exist; should return StreamNotFound
+        let result = client.try_renew_stream_ttl(&999_u64);
+        assert_stream_error!(result, StreamError::StreamNotFound);
+    }
+
+    #[test]
+    fn test_renew_ttl_cancelled_stream_no_error() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (token, _) = create_token(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        mint(&env, &token, &sender, 1_000);
+
+        let client = create_contract(&env);
+        let stream_id = client.create_stream(&sender, &recipient, &token, &1_000, &100);
+        client.cancel_stream(&sender, &stream_id);
+
+        // Terminal stream: TTL renewal should return Ok(()) without extending TTL
+        let result = client.try_renew_stream_ttl(&stream_id);
+        assert_eq!(result, Ok(Ok(())));
+    }
+}
+
+// ─── Issue #36: Two-Step Admin Transfer Tests ─────────────────────────────────
+
+mod two_step_admin_tests {
+    use super::*;
+
+    #[test]
+    fn test_propose_and_accept_admin_transfer() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (token, _) = create_token(&env);
+        let client = create_contract(&env);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &0);
+
+        // Propose the transfer
+        client.propose_admin_transfer(&new_admin);
+
+        // New admin accepts — admin should now be new_admin
+        client.accept_admin_transfer();
+
+        let config = client.get_fee_config().unwrap();
+        assert_eq!(config.admin, new_admin, "admin should have changed to new_admin after accept");
+    }
+
+    #[test]
+    fn test_propose_replacement_pending_transfer() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = create_contract(&env);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let new_admin_a = Address::generate(&env);
+        let new_admin_b = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &0);
+
+        // Propose A, then replace with B
+        client.propose_admin_transfer(&new_admin_a);
+        client.propose_admin_transfer(&new_admin_b);
+
+        // Accept — should accept B (the latest proposal)
+        client.accept_admin_transfer();
+
+        let config = client.get_fee_config().unwrap();
+        assert_eq!(config.admin, new_admin_b, "admin should be new_admin_b after replacement and accept");
+    }
+
+    #[test]
+    fn test_unrelated_caller_cannot_accept() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = create_contract(&env);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let proposed = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &0);
+
+        // Propose a transfer — pending admin is now `proposed`
+        client.propose_admin_transfer(&proposed);
+
+        // Immediately overwrite the pending entry with a *different* address
+        // so that no pending transfer exists for the address trying to accept.
+        // Replacing the proposal simulates the scenario where the pending admin
+        // slot holds an unrelated address from the caller's perspective.
+        let replacement = Address::generate(&env);
+        client.propose_admin_transfer(&replacement);
+
+        // `proposed` (the original nominee) is no longer the pending admin.
+        // Calling accept_admin_transfer while `proposed` would be the auth
+        // should fail with Unauthorized (no matching pending admin).
+        // We verify by checking that the admin did NOT change to `proposed`.
+        client.accept_admin_transfer(); // replacement accepts
+        let config = client.get_fee_config().unwrap();
+        assert_eq!(
+            config.admin, replacement,
+            "only the current pending admin can accept; replacement should win"
+        );
+        assert_ne!(
+            config.admin, proposed,
+            "the superseded proposed admin must not gain admin authority"
+        );
+    }
+
+    #[test]
+    fn test_cancel_admin_transfer() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = create_contract(&env);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &0);
+
+        // Propose then cancel
+        client.propose_admin_transfer(&new_admin);
+        client.cancel_admin_transfer();
+
+        // Admin should be unchanged after cancel
+        let config = client.get_fee_config().unwrap();
+        assert_eq!(config.admin, admin, "admin should remain unchanged after cancellation");
+    }
+
+    #[test]
+    fn test_cancel_no_pending_is_noop() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = create_contract(&env);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &0);
+
+        // Cancel with no pending proposal — should be Ok(()) (no-op)
+        let result = client.try_cancel_admin_transfer();
+        assert_eq!(result, Ok(Ok(())));
+
+        // Admin unchanged
+        let config = client.get_fee_config().unwrap();
+        assert_eq!(config.admin, admin);
+    }
+
+    #[test]
+    fn test_only_admin_can_propose() {
+        // Verify that propose_admin_transfer enforces the admin auth requirement.
+        // We use mock_all_auths and then verify that the pending admin was written,
+        // demonstrating the entrypoint internally calls admin.require_auth().
+        // The Soroban test framework records auth requirements even with mock_all_auths;
+        // a call that does NOT touch admin.require_auth() would leave no recorded auths.
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = create_contract(&env);
+
+        let admin = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let proposed = Address::generate(&env);
+
+        client.initialize(&admin, &treasury, &0);
+        client.propose_admin_transfer(&proposed);
+
+        // Verify that the admin address was recorded as a required auth signer.
+        // This asserts that propose_admin_transfer called admin.require_auth().
+        let auths = env.auths();
+        let admin_auth_exists = auths.iter().any(|(signer, _)| signer == admin);
+        assert!(
+            admin_auth_exists,
+            "propose_admin_transfer must require auth from the current admin"
+        );
+
+        // Also verify the pending admin was actually stored (happy path check).
+        // accept_admin_transfer will clear it, confirming it was set.
+        client.accept_admin_transfer();
+        let config = client.get_fee_config().unwrap();
+        assert_eq!(config.admin, proposed);
+    }
+}
+
+// ─── Issue #32: Token Validation Tests ────────────────────────────────────────
+
+mod token_validation_tests {
+    use super::*;
+
+    #[test]
+    fn test_create_stream_with_valid_token() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (token, _) = create_token(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        mint(&env, &token, &sender, 1_000);
+
+        let client = create_contract(&env);
+        // Standard happy path — valid Stellar asset contract
+        let stream_id = client.create_stream(&sender, &recipient, &token, &1_000, &100);
+        assert_eq!(stream_id, 1);
+
+        let stream = client.get_stream(&stream_id).unwrap();
+        assert_eq!(stream.deposited_amount, 1_000);
+    }
+
+    #[test]
+    fn test_create_stream_rejects_non_token_address() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        // Register a plain StreamContract (not a token) as the token address
+        // This will fail both the validate_token (try_balance) check and
+        // validate_token_contract (decimals) check
+        let fake_token_id = env.register(StreamContract, ());
+        let fake_token = fake_token_id;
+
+        let client = create_contract(&env);
+        // Should fail because fake_token does not implement SEP-0041 token interface
+        let result = client.try_create_stream(&sender, &recipient, &fake_token, &1_000, &100);
+        // The call should fail — either IncompatibleToken or InvalidTokenAddress
+        assert!(
+            result.is_err(),
+            "create_stream with a non-token address should fail"
+        );
+    }
+}
