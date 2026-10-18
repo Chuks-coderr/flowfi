@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { hostname } from "os";
 import { rpc, xdr, StrKey } from "@stellar/stellar-sdk";
 import { prisma } from "../lib/prisma.js";
 import { INDEXER_STATE_ID, ensureIndexerState } from "../lib/indexer-state.js";
@@ -8,8 +9,22 @@ import {
   indexerEventsProcessedTotal,
   indexerPollsTotal,
   recordRpcRequest,
+  recordIndexerLag,
+  recordIndexerEventsPerLedger,
+  recordIndexerDecodeLatency,
+  recordIndexerPersistLatency,
+  recordIndexerRetry,
+  recordIndexerLastSuccess,
   recordIndexerBatch,
 } from "../lib/metrics.js";
+import {
+  acquireIndexerLease,
+  renewIndexerLease,
+  releaseIndexerLease,
+  isLeaseHeld,
+  getHeldFencingToken,
+  type IndexerLease,
+} from "../lib/indexer-lease.js";
 import { withSpan } from "../lib/tracing.js";
 import logger, { requestContext } from "../logger.js";
 import { Prisma } from "../generated/prisma/index.js";
@@ -25,6 +40,14 @@ import {
 
 /** Ledger rollbacks above this ceiling are escalated to dead-letter triage. */
 const REORG_ALERT_THRESHOLD_DEFAULT = 5;
+
+/**
+ * Default lease TTL for poll ownership. A replica must renew well before this
+ * expires or another replica may take over the cursor.
+ */
+const LEASE_TTL_MS_DEFAULT = 30_000;
+/** Renewal cadence; must be strictly shorter than the TTL (default TTL/3). */
+const LEASE_RENEW_INTERVAL_MS_DEFAULT = 10_000;
 
 /**
  * Default upper bound on the number of events persisted in a single batch
@@ -141,6 +164,17 @@ export class SorobanEventWorker {
 
   private isRunning = false;
   private pollTimer: NodeJS.Timeout | undefined;
+  /** Interval handle for lease renewal while this replica owns the poll. */
+  private leaseRenewTimer: NodeJS.Timeout | undefined;
+  /** Stable identity for this replica: hostname + pid + random suffix. */
+  private readonly ownerId: string;
+  /** Lease TTL and renewal cadence (ms). */
+  private readonly leaseTtlMs: number;
+  private readonly leaseRenewIntervalMs: number;
+  /** True while this replica holds the poll lease. */
+  private leaseHeld = false;
+  /** Fencing token of the currently-held lease (null when not held). */
+  private fencingToken: number | null = null;
   /**
    * In-flight fetch/process work from either the scheduler or `triggerPoll`.
    * `waitForDrain()` awaits this so graceful shutdown covers replay batches too.
@@ -173,6 +207,18 @@ export class SorobanEventWorker {
         String(REORG_ALERT_THRESHOLD_DEFAULT),
       10,
     );
+    this.ownerId =
+      process.env.INDEXER_OWNER_ID ??
+      `${hostname()}:${process.pid}:${randomUUID()}`;
+    this.leaseTtlMs = parseInt(
+      process.env.INDEXER_LEASE_TTL_MS ?? String(LEASE_TTL_MS_DEFAULT),
+      10,
+    );
+    this.leaseRenewIntervalMs = parseInt(
+      process.env.INDEXER_LEASE_RENEW_INTERVAL_MS ??
+        String(LEASE_RENEW_INTERVAL_MS_DEFAULT),
+      10,
+    );
     this.batchMaxSize = Math.max(
       1,
       parseInt(
@@ -197,6 +243,16 @@ export class SorobanEventWorker {
         10,
       ) || EVENT_BATCH_MAX_ATTEMPTS_DEFAULT,
     );
+  }
+
+  /** Stable owner identity used for lease acquisition (exposed for tests). */
+  getOwnerId(): string {
+    return this.ownerId;
+  }
+
+  /** True when this replica currently owns the poll lease. */
+  hasLease(): boolean {
+    return this.leaseHeld;
   }
 
   /**
@@ -251,6 +307,11 @@ export class SorobanEventWorker {
 
     this.isRunning = true;
     logger.info("[SorobanWorker] Starting Soroban event indexer…");
+
+    // Acquire the poll lease before the first cycle. If another replica owns
+    // it we still schedule polls so we can take over once it expires.
+    await this.tryAcquireLease();
+
     await this.poll();
   }
 
@@ -261,7 +322,84 @@ export class SorobanEventWorker {
       clearTimeout(this.pollTimer);
       this.pollTimer = undefined;
     }
+    this.stopLeaseRenewal();
+    // Best-effort release so another replica can take over immediately.
+    if (this.leaseHeld) {
+      const token = this.fencingToken;
+      this.leaseHeld = false;
+      this.fencingToken = null;
+      void releaseIndexerLease(this.ownerId, token).catch((err) => {
+        logger.warn("[SorobanWorker] Failed to release indexer lease:", err);
+      });
+    }
     logger.info("[SorobanWorker] Stopped.");
+  }
+
+  // ─── Lease ownership ───────────────────────────────────────────────────────
+
+  /** Attempt to acquire the poll lease; logs and returns false on failure. */
+  private async tryAcquireLease(): Promise<boolean> {
+    try {
+      const lease: IndexerLease | null = await acquireIndexerLease(
+        this.ownerId,
+        this.leaseTtlMs,
+      );
+      if (!lease) return false;
+      this.leaseHeld = true;
+      this.fencingToken = lease.fencingToken;
+      this.startLeaseRenewal();
+      logger.info(
+        `[SorobanWorker] Acquired indexer lease (owner=${this.ownerId}, token=${lease.fencingToken}).`,
+      );
+      return true;
+    } catch (err) {
+      logger.error("[SorobanWorker] Failed to acquire indexer lease:", err);
+      return false;
+    }
+  }
+
+  private startLeaseRenewal(): void {
+    this.stopLeaseRenewal();
+    this.leaseRenewTimer = setInterval(() => {
+      void this.renewLease();
+    }, this.leaseRenewIntervalMs);
+    // Do not keep the process alive solely for lease renewal.
+    this.leaseRenewTimer.unref?.();
+  }
+
+  private stopLeaseRenewal(): void {
+    if (this.leaseRenewTimer) {
+      clearInterval(this.leaseRenewTimer);
+      this.leaseRenewTimer = undefined;
+    }
+  }
+
+  private async renewLease(): Promise<void> {
+    if (!this.leaseHeld) return;
+    try {
+      const renewed = await renewIndexerLease(
+        this.ownerId,
+        this.leaseTtlMs,
+        this.fencingToken,
+      );
+      if (!renewed) {
+        this.handleLeaseLoss("renewal rejected (lease taken over or expired)");
+      }
+    } catch (err) {
+      logger.warn("[SorobanWorker] Indexer lease renewal failed:", err);
+    }
+  }
+
+  /** Called when the lease is lost: stop polling and log loudly. */
+  private handleLeaseLoss(reason: string): void {
+    if (!this.leaseHeld) return;
+    this.leaseHeld = false;
+    this.fencingToken = null;
+    this.stopLeaseRenewal();
+    logger.error(
+      `[SorobanWorker] Lost indexer lease (owner=${this.ownerId}): ${reason}. ` +
+        `Polling halted; this replica will not advance the cursor.`,
+    );
   }
 
   /** Wait for the currently-running poll/replay batch to finish (no-op if idle). */
@@ -369,6 +507,19 @@ export class SorobanEventWorker {
 
   private async poll(): Promise<void> {
     try {
+      // Only the lease owner may poll. Non-owners attempt to acquire the lease
+      // (which succeeds once the current owner's lease expires) and otherwise
+      // skip this cycle entirely.
+      if (!this.leaseHeld) {
+        const acquired = await this.tryAcquireLease();
+        if (!acquired) {
+          logger.debug?.(
+            "[SorobanWorker] Skipping poll — indexer lease held by another replica.",
+          );
+          return;
+        }
+      }
+
       const requestId = randomUUID();
       await this.runExclusive(() => {
         const execute = () =>
@@ -490,6 +641,16 @@ export class SorobanEventWorker {
   }
 
   private async runPollCycle(): Promise<void> {
+    // Re-check ownership at the start of the cycle: a lease may have been lost
+    // between scheduling and execution. Never advance the cursor without it.
+    if (!this.leaseHeld || this.fencingToken === null) {
+      logger.warn(
+        "[SorobanWorker] Aborting poll cycle — indexer lease not held.",
+      );
+      return;
+    }
+    const fencingToken = this.fencingToken;
+
     // Ensure an IndexerState row exists on first run.
     let state = await ensureIndexerState(this.startLedger);
 
@@ -545,6 +706,7 @@ export class SorobanEventWorker {
     } catch (err) {
       recordRpcRequest("getEvents", (Date.now() - rpcStart) / 1000, "error");
       indexerPollsTotal.inc({ outcome: "rpc_error" });
+      recordIndexerRetry("rpc");
       throw err;
     }
 
@@ -552,9 +714,14 @@ export class SorobanEventWorker {
     // even on cycles that return no events.
     const networkLedger = response.latestLedger ?? 0;
 
+    // Lag in ledgers between the last indexed ledger and the network tip.
+    // Bounded labels only (no tx hashes / addresses).
+    recordIndexerLag(Math.max(0, networkLedger - state.lastLedger));
+
     if (response.events.length === 0) {
       indexerPollsTotal.inc({ outcome: "empty" });
       publishIndexerLag(state.lastLedger, networkLedger);
+      recordIndexerLastSuccess();
       return;
     }
 
@@ -607,6 +774,43 @@ export class SorobanEventWorker {
       // Only process events from successful contract calls.
       if (!event.inSuccessfulContractCall) continue;
 
+      const decodeStart = Date.now();
+      const eventType = event.topic[0] ? decodeSymbol(event.topic[0]) : "unknown";
+      recordIndexerDecodeLatency((Date.now() - decodeStart) / 1000);
+
+      try {
+        const persistStart = Date.now();
+        await this.processEvent(event);
+        recordIndexerPersistLatency((Date.now() - persistStart) / 1000);
+        this.eventsProcessed += 1;
+        this.recordOutcome(true);
+        sawSuccess = true;
+        const ledgerEvents = processedByLedger.get(event.ledger) ?? [];
+        ledgerEvents.push({
+          ledgerSequence: event.ledger,
+          transactionHash: event.txHash,
+          eventType,
+        });
+        processedByLedger.set(event.ledger, ledgerEvents);
+        // Advance the cursor to the most recent event that was successfully processed.
+        // This keeps a single malformed event from pinning the entire batch forever.
+        lastCursor = event.id;
+        lastLedger = event.ledger;
+        indexerEventsProcessedTotal.inc({ eventType, result: "processed" });
+      } catch (err) {
+        indexerEventsProcessedTotal.inc({ eventType, result: "quarantined" });
+        recordIndexerRetry("quarantine");
+        logger.error(
+          `[SorobanWorker] Failed to process event ${event.id}:`,
+          err,
+        );
+        // Quarantine rather than retry inline: a payload the handler cannot
+        // parse would otherwise be re-fetched every cycle and block everything
+        // queued behind it. Operators replay it via the admin dead-letter API.
+        await quarantineEvent(event, err);
+        // Continue processing subsequent events rather than halting.
+      }
+
       batch.push(event);
 
       const elapsed = Date.now() - batchStartedAt;
@@ -616,8 +820,14 @@ export class SorobanEventWorker {
       ) {
         await flush();
       }
+      }
     }
     await flush();
+
+    // Events per ledger for this batch (bounded: one observation per ledger).
+    for (const [, ledgerEvents] of processedByLedger) {
+      recordIndexerEventsPerLedger(ledgerEvents.length);
+    }
 
     // If we successfully processed any events in the batch, advance to the last
     // successful event so a single poison-pill failure cannot freeze the cursor.
@@ -631,22 +841,52 @@ export class SorobanEventWorker {
       await this.recordLedgerCheckpoints(processedByLedger);
     }
 
+    // Fenced cursor write: only the current lease owner may advance the cursor.
+    // A stale worker whose lease expired (and was taken over) is rejected here
+    // rather than clobbering the new owner's progress.
+    const persisted = await this.persistCursorFenced(
+      fencingToken,
+      lastLedger,
+      finalCursor,
+    );
+    if (!persisted) {
+      // Ownership was lost mid-cycle; do not report success or advance lag.
+      this.handleLeaseLoss("fenced cursor write rejected");
+      return;
+    }
+
+    indexerPollsTotal.inc({ outcome: "processed" });
+    publishIndexerLag(lastLedger, networkLedger);
+    recordIndexerLastSuccess();
+
+    logger.info(
+      `[SorobanWorker] Processed ${response.events.length} event(s) — latest ledger: ${lastLedger}`,
+    );
+  }
+
+  /**
+   * Advance the indexer cursor only if `fencingToken` still matches the lease
+   * held in the database. Returns false when the write was fenced out (the
+   * lease was lost or taken over), in which case the caller must stop.
+   */
+  private async persistCursorFenced(
+    fencingToken: number,
+    lastLedger: number,
+    lastCursor: string | null,
+  ): Promise<boolean> {
+    const held = await isLeaseHeld(this.ownerId, fencingToken);
+    if (!held) return false;
+
     await prisma.indexerState.upsert({
       where: { id: INDEXER_STATE_ID },
       create: {
         id: INDEXER_STATE_ID,
         lastLedger,
-        lastCursor: finalCursor,
+        lastCursor,
       },
-      update: { lastLedger, lastCursor: finalCursor },
+      update: { lastLedger, lastCursor },
     });
-
-    indexerPollsTotal.inc({ outcome: "processed" });
-    publishIndexerLag(lastLedger, networkLedger);
-
-    logger.info(
-      `[SorobanWorker] Processed ${response.events.length} event(s) — latest ledger: ${lastLedger}`,
-    );
+    return true;
   }
 
   /**
