@@ -12,6 +12,7 @@ import {
 } from '../services/indexerService.js';
 import { ApiError } from '../errors/ApiError.js';
 import logger from '../logger.js';
+import { ApiError, sendApiError } from '../errors/index.js';
 
 /**
  * Validated query shape for the dead-letter listing endpoint. Values are
@@ -51,8 +52,47 @@ export const listDeadLetterHandler = async (req: Request, res: Response) => {
     MAX_DEAD_LETTER_PAGE_SIZE,
   );
 
-  if (query.startDate && query.endDate && query.startDate > query.endDate) {
-    throw new ApiError(400, 'startDate must be before endDate', 'invalid_query');
+  const startDate = parseOptionalDate(
+    readSingleQueryParam(req.query.startDate),
+    'startDate',
+  );
+  if (startDate.error) {
+    return sendApiError(
+      req,
+      res,
+      new ApiError('VALIDATION_FAILED', startDate.error, {
+        details: [{ field: 'startDate', message: startDate.error }],
+      }),
+    );
+  }
+
+  const endDate = parseOptionalDate(
+    readSingleQueryParam(req.query.endDate),
+    'endDate',
+  );
+  if (endDate.error) {
+    return sendApiError(
+      req,
+      res,
+      new ApiError('VALIDATION_FAILED', endDate.error, {
+        details: [{ field: 'endDate', message: endDate.error }],
+      }),
+    );
+  }
+
+  if (startDate.value && endDate.value && startDate.value > endDate.value) {
+    return sendApiError(
+      req,
+      res,
+      new ApiError('VALIDATION_FAILED', 'startDate must be before endDate', {
+        details: [
+          {
+            field: 'startDate',
+            message: 'startDate must be before endDate',
+          },
+        ],
+      }),
+    );
   }
 
   const result = await listDeadLetterEvents({
@@ -61,8 +101,8 @@ export const listDeadLetterHandler = async (req: Request, res: Response) => {
     ...(query.ledgerSequence !== undefined
       ? { ledgerSequence: query.ledgerSequence }
       : {}),
-    ...(query.startDate ? { startDate: query.startDate } : {}),
-    ...(query.endDate ? { endDate: query.endDate } : {}),
+    ...(startDate.value ? { startDate: startDate.value } : {}),
+    ...(endDate.value ? { endDate: endDate.value } : {}),
     ...(query.eventType ? { eventType: query.eventType } : {}),
   });
 
@@ -137,7 +177,7 @@ export const replayDeadLetterHandler = async (req: Request, res: Response) => {
     const result = await replayDeadLetterEvent(id);
 
     if (result.outcome === 'not_found') {
-      return res.status(404).json({ error: 'Dead-letter event not found' });
+      return sendApiError(req, res, new ApiError('NOT_FOUND'));
     }
 
     if (result.outcome === 'undecodable') {
@@ -170,7 +210,7 @@ export const replayDeadLetterHandler = async (req: Request, res: Response) => {
     });
   } catch (err) {
     logger.error(`[AdminController] Replay of dead-letter ${id} threw:`, err);
-    return res.status(500).json({ error: 'Replay failed' });
+    return sendApiError(req, res, new ApiError('INTERNAL_ERROR'));
   }
 
   if (result.outcome === 'failed') {
@@ -194,7 +234,7 @@ export const replayDeadLetterHandler = async (req: Request, res: Response) => {
  *
  * Replays every pending record sequentially, oldest ledger first.
  */
-export const replayAllDeadLetterHandler = async (_req: Request, res: Response) => {
+export const replayAllDeadLetterHandler = async (req: Request, res: Response) => {
   try {
     const summary = await replayAllDeadLetterEvents();
     // A partial batch is reported with 207 so callers can distinguish a
@@ -204,7 +244,7 @@ export const replayAllDeadLetterHandler = async (_req: Request, res: Response) =
     return res.status(status).json({ ok: true, ...summary });
   } catch (err) {
     logger.error('[AdminController] Dead-letter replay-all threw:', err);
-    return res.status(500).json({ error: 'Replay-all failed' });
+    return sendApiError(req, res, new ApiError('INTERNAL_ERROR'));
   }
 };
 

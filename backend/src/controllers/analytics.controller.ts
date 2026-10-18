@@ -14,7 +14,7 @@ import {
   type AnalyticsInterval,
   type AnalyticsPeriod,
 } from "../services/analytics.service.js";
-import { sendApiError } from "../types/api-error.js";
+import { ApiError, sendApiError } from "../types/api-error.js";
 import logger from "../logger.js";
 
 const VALID_PERIODS: AnalyticsPeriod[] = ["7d", "30d", "90d", "1y"];
@@ -71,7 +71,10 @@ export async function getTvlHandler(req: Request, res: Response) {
       return;
     }
     logger.error("analytics TVL request failed:", error);
-    sendApiError(res, 500, "ANALYTICS_UNAVAILABLE", "TVL snapshot unavailable");
+    sendApiError(
+      res,
+      new ApiError("ANALYTICS_UNAVAILABLE", "TVL snapshot unavailable")
+    );
   }
 }
 
@@ -92,18 +95,18 @@ export async function getHistoricalHandler(req: Request, res: Response) {
   if (!VALID_PERIODS.includes(period)) {
     sendApiError(
       res,
-      400,
-      "INVALID_PERIOD",
-      `period must be one of: ${VALID_PERIODS.join(", ")}`
+      new ApiError("INVALID_PERIOD", "Invalid analytics period", {
+        details: [{ field: "period", issue: `must be one of: ${VALID_PERIODS.join(", ")}` }],
+      })
     );
     return;
   }
   if (!VALID_INTERVALS.includes(interval)) {
     sendApiError(
       res,
-      400,
-      "INVALID_INTERVAL",
-      `interval must be one of: ${VALID_INTERVALS.join(", ")}`
+      new ApiError("INVALID_INTERVAL", "Invalid analytics interval", {
+        details: [{ field: "interval", issue: `must be one of: ${VALID_INTERVALS.join(", ")}` }],
+      })
     );
     return;
   }
@@ -121,9 +124,7 @@ export async function getHistoricalHandler(req: Request, res: Response) {
     logger.error("analytics historical request failed:", error);
     sendApiError(
       res,
-      500,
-      "ANALYTICS_UNAVAILABLE",
-      "Historical analytics unavailable"
+      new ApiError("ANALYTICS_UNAVAILABLE", "Historical analytics unavailable")
     );
   }
 }
@@ -153,9 +154,7 @@ export async function getDefiLlamaHandler(req: Request, res: Response) {
     logger.error("DefiLlama adapter request failed:", error);
     sendApiError(
       res,
-      500,
-      "ANALYTICS_UNAVAILABLE",
-      "DefiLlama adapter unavailable"
+      new ApiError("ANALYTICS_UNAVAILABLE", "DefiLlama adapter unavailable")
     );
   }
 }
