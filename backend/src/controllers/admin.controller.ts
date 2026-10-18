@@ -12,6 +12,7 @@ import {
 } from '../services/indexerService.js';
 import { ApiError } from '../errors/ApiError.js';
 import logger from '../logger.js';
+import { recordAuditEvent } from '../services/audit.service.js';
 import { ApiError, sendApiError } from '../errors/index.js';
 
 /**
@@ -176,6 +177,16 @@ export const replayDeadLetterHandler = async (req: Request, res: Response) => {
   try {
     const result = await replayDeadLetterEvent(id);
 
+    await recordAuditEvent({
+      actor: (req as AuthenticatedRequest).user.publicKey,
+      action: 'indexer.dead_letter.replay',
+      targetType: 'dead_letter_event',
+      targetId: id,
+      outcome: result.outcome === 'replayed' ? 'success' : 'failure',
+      after: { outcome: result.outcome },
+      metadata: { attempts: 'attempts' in result ? result.attempts : undefined },
+    });
+
     if (result.outcome === 'not_found') {
       return sendApiError(req, res, new ApiError('NOT_FOUND'));
     }
@@ -237,6 +248,14 @@ export const replayDeadLetterHandler = async (req: Request, res: Response) => {
 export const replayAllDeadLetterHandler = async (req: Request, res: Response) => {
   try {
     const summary = await replayAllDeadLetterEvents();
+    await recordAuditEvent({
+      actor: (req as AuthenticatedRequest).user.publicKey,
+      action: 'indexer.dead_letter.replay_all',
+      targetType: 'dead_letter_queue',
+      targetId: 'pending',
+      outcome: summary.failed === 0 ? 'success' : 'failure',
+      after: { replayed: summary.replayed, failed: summary.failed },
+    });
     // A partial batch is reported with 207 so callers can distinguish a
     // reproducible partial success from a clean run without breaking the
     // existing 200 shape for full success.
@@ -261,6 +280,14 @@ export const discardDeadLetterHandler = async (req: Request, res: Response) => {
 
   try {
     const discarded = await discardDeadLetterEvent(id, discardedBy);
+    await recordAuditEvent({
+      actor: discardedBy,
+      action: 'indexer.dead_letter.discard',
+      targetType: 'dead_letter_event',
+      targetId: id,
+      outcome: 'success',
+      after: { discarded: true },
+    });
     return res.status(200).json({ ok: true, discarded });
   } catch (err) {
     if (err instanceof DeadLetterNotFoundError) {

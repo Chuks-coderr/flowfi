@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import { subscribe } from '../../controllers/sse.controller.js';
+import { createSseTicket, subscribe } from '../../controllers/sse.controller.js';
 import { sseService } from '../../services/sse.service.js';
 import { requireAdmin, requireAuth } from '../../middleware/auth.js';
 import type { AuthenticatedRequest } from '../../types/auth.types.js';
@@ -41,11 +41,6 @@ function wantsCursorPagination(req: Request): boolean {
  *       was either the sender or recipient. Supports event-type filtering and
  *       limit/offset pagination — used by the frontend activity timeline.
  *     parameters:
- *       - in: query
- *         name: address
- *         required: true
- *         schema: { type: string }
- *         description: Stellar public key (G...)
  *       - in: query
  *         name: type
  *         required: false
@@ -97,19 +92,13 @@ function wantsCursorPagination(req: Request): boolean {
  *             schema:
  *               $ref: '#/components/schemas/EventListResponse'
  *       400:
- *         description: Missing/invalid `address` or invalid `type` filter
+ *         description: Invalid `type` filter
  *         content:
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
  *       401:
  *         description: Unauthorized - missing or invalid authentication token
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
- *       403:
- *         description: Forbidden - `address` must match the authenticated wallet
  *         content:
  *           application/json:
  *             schema:
@@ -124,18 +113,6 @@ function wantsCursorPagination(req: Request): boolean {
 router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { publicKey } = (req as AuthenticatedRequest).user;
-    const address = typeof req.query.address === 'string' ? req.query.address.trim() : '';
-    if (!address) {
-      res.status(400).json({ error: 'address query parameter is required' });
-      return;
-    }
-
-    // Aligned with SSE security: history queries require authentication and are scoped to the caller.
-    if (address !== publicKey) {
-      res.status(403).json({ error: 'Forbidden', message: 'You can only view your own event history' });
-      return;
-    }
-
     const { requested, types } = parseEventTypeFilter(req.query.type);
     if (requested.length > 0 && types.length === 0) {
       res.status(400).json({ error: 'No valid event types in `type` filter' });
@@ -185,7 +162,7 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
     });
 
     const result = await listEventsForWallet({
-      address,
+      address: publicKey,
       types,
       limit,
       offset,
@@ -281,7 +258,8 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
  *       401:
  *         description: Unauthorized - missing or invalid authentication token
  */
-router.get('/subscribe', requireAuth, subscribe);
+router.post('/subscribe-ticket', requireAuth, createSseTicket);
+router.get('/subscribe', subscribe);
 
 /**
  * @openapi

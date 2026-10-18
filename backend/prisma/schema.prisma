@@ -145,17 +145,19 @@ model StreamEvent {
 // history and replay audit records survive deletion. Disabling is recorded with
 // disabledAt/disabledReason and is distinct from deletion.
 model WebhookSubscription {
-  id             String    @id @default(uuid())
-  userAddress    String    // Stellar public key of the owner
-  targetUrl      String    // Destination webhook URL (must be HTTPS)
-  secretKey      String    // Secret used for HMAC-SHA256 signature
-  eventTypes     String[]  // Array of subscribed event types (e.g., ["STREAM_CREATED", "TOKENS_WITHDRAWN"])
-  isActive       Boolean   @default(true)
-  disabledAt     DateTime? // When the endpoint was disabled (null when enabled)
-  disabledReason String?   // Operator/user supplied reason for disabling
-  deletedAt      DateTime? // Soft-delete marker; non-null endpoints are treated as gone
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  id                      String    @id @default(uuid())
+  userAddress             String    // Stellar public key of the owner
+  targetUrl               String    // Destination webhook URL (must be HTTPS)
+  secretKey               String    // AES-256-GCM envelope encrypted
+  previousSecretKey       String?   // Encrypted prior key during bounded rotation overlap
+  previousSecretExpiresAt DateTime?
+  eventTypes              String[]  // Array of subscribed event types (e.g., ["STREAM_CREATED", "TOKENS_WITHDRAWN"])
+  isActive                Boolean   @default(true)
+  disabledAt              DateTime? // When the endpoint was disabled (null when enabled)
+  disabledReason          String?   // Operator/user supplied reason for disabling
+  deletedAt               DateTime? // Soft-delete marker; non-null endpoints are treated as gone
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
 
   deliveries  WebhookDelivery[]
   replays     WebhookDeliveryReplay[]
@@ -164,6 +166,25 @@ model WebhookSubscription {
   @@index([isActive])
   @@index([deletedAt])
   @@index([userAddress, deletedAt])
+}
+
+// Append-only record for security-sensitive operational changes.
+model AuditEvent {
+  id         String   @id @default(uuid())
+  occurredAt DateTime @default(now())
+  actor      String
+  requestId  String?
+  action     String
+  targetType String
+  targetId   String
+  outcome    String
+  before     Json?    @db.JsonB
+  after      Json?    @db.JsonB
+  metadata   Json?    @db.JsonB
+
+  @@index([occurredAt])
+  @@index([targetType, targetId])
+  @@index([actor, occurredAt])
 }
 
 // WebhookDelivery model - Webhook delivery history and retry tracking (Issue #1189)
