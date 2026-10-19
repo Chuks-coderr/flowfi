@@ -104,6 +104,10 @@ model StreamEvent {
   @@index([transactionHash])
   @@index([createdAt])
   @@index([streamId, timestamp])
+  // Canonical ordering index: (streamId, ledgerSequence) gives deterministic
+  // blockchain-ordered event listings. ledger_sequence is the total order on
+  // Stellar — no two events in different ledgers share a sequence number.
+  @@index([streamId, ledgerSequence])
 }
 
 // WebhookSubscription model - Outgoing webhook configuration for external integrations (Issue #1189)
@@ -176,4 +180,35 @@ model IndexerDeadLetterEvent {
   @@index([createdAt])
   @@index([attempts])
   @@index([eventType])
+}
+
+// BackfillJob model - tracks historical backfill operations for bounded ledger ranges.
+// Allows safe restart, progress monitoring, and protection from duplicate writes.
+model BackfillJob {
+  id            String   @id @default(uuid())
+  name          String?  // Optional human-readable name for the backfill
+  fromLedger    Int      // Inclusive start ledger
+  toLedger      Int      // Inclusive end ledger
+  status        BackfillStatus @default(PENDING)
+  currentLedger Int      @default(0) // Current ledger being processed (for progress tracking)
+  eventsProcessed Int    @default(0)
+  eventsFailed    Int    @default(0)
+  errorMessage    String? // Last error if failed
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([status])
+  @@index([fromLedger, toLedger])
+  @@index([createdAt])
+}
+
+enum BackfillStatus {
+  PENDING
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+  CANCELLED
 }

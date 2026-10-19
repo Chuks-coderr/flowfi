@@ -206,6 +206,22 @@ pub enum DataKey {
 ///
 /// Stored in persistent storage under `DataKey::Stream(id)`.
 /// Space: O(1) per stream.
+///
+/// ## Canonical State Machine (#21)
+///
+/// The three fields `is_active`, `paused`, and `status` encode the lifecycle
+/// state together. The only valid combinations are:
+///
+/// | State     | `is_active` | `paused` | `status`    | Terminal? |
+/// |-----------|-------------|----------|-------------|-----------|
+/// | Active    | `true`      | `false`  | `Active`    | No        |
+/// | Paused    | `true`      | `true`   | `Paused`    | No        |
+/// | Cancelled | `false`     | `false`  | `Cancelled` | Yes       |
+/// | Completed | `false`     | `false`  | `Completed` | Yes       |
+///
+/// Terminal streams (Cancelled/Completed) can never be reactivated. The
+/// `validate_stream_active` helper enforces this invariant by checking both
+/// `is_active` and `status` together.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Stream {
