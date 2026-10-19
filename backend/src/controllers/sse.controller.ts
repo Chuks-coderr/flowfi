@@ -64,6 +64,25 @@ function getClientIp(req: Request): string {
 
   return req.ip || req.socket.remoteAddress || 'unknown';
 }
+
+/**
+ * Issue 1: Parse the `Last-Event-ID` HTTP header sent by the browser on
+ * reconnect.  Returns the numeric ID, or null when absent or not a valid
+ * positive integer.
+ *
+ * The browser automatically sets `Last-Event-ID` from the most recent `id:`
+ * field it received.  We use a per-process monotonically increasing integer
+ * as the ID so we can efficiently find the missed window in the replay buffer.
+ */
+function parseLastEventId(req: Request): number | null {
+  const raw = req.headers['last-event-id'];
+  if (!raw) return null;
+  const str = Array.isArray(raw) ? raw[0] : raw;
+  if (!str) return null;
+  const n = Number.parseInt(str, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 export const subscribe = async (req: Request, res: Response) => {
   if (req.query.network !== undefined && req.query.network !== getConfiguredStellarNetwork()) {
     return res.status(409).json({
@@ -82,9 +101,14 @@ export const subscribe = async (req: Request, res: Response) => {
     if (!ticket) {
       return res.status(401).json({ message: 'Missing, invalid, or expired SSE ticket' });
     }
+
+    // Issue 2: re-verify stream ownership at connection time (defense-in-depth
+    // on top of ticket issuance) so stale tickets from the 60-second issuance
+    // window cannot subscribe to streams the user no longer owns.
+    const { publicKey } = ticket;
     const sourceIp = getClientIp(req);
-    const authUserId = ticket.publicKey;
-    const capacity = sseService.checkCapacity(sourceIp, authUserId);
+
+    const capacity = sseService.checkCapacity(sourceIp, publicKey);
     if (!capacity.allowed) {
       if (capacity.retryAfterSeconds) {
         res.setHeader('Retry-After', String(capacity.retryAfterSeconds));
@@ -94,8 +118,6 @@ export const subscribe = async (req: Request, res: Response) => {
       });
     }
 
-    const { publicKey } = ticket;
-
     // Consistent with GET /v1/events/ (which requires requireAuth and is scoped to user's address),
     // SSE subscriptions are also restricted to streams owned by the authenticated user.
     // Scope: only streams where the authenticated user is sender or recipient
@@ -104,7 +126,7 @@ export const subscribe = async (req: Request, res: Response) => {
     // when the cap is reached.
     const ownedStreams = await prisma.stream.findMany({
       where: { OR: [{ sender: publicKey }, { recipient: publicKey }] },
-      orderBy: { startTime: "desc" },
+      orderBy: { startTime: 'desc' },
       take: MAX_SSE_STREAMS,
       select: { streamId: true, sender: true, recipient: true },
     });
@@ -115,14 +137,19 @@ export const subscribe = async (req: Request, res: Response) => {
       allowedUserKeys.add(stream.recipient);
     }
 
-    let subscriptions: string[];
-    subscriptions = ticket.streams.filter((id) => ownedIds.has(id));
+    // Issue 2: intersect ticket's stream list with currently-owned IDs so a
+    // ticket issued before a stream was transferred cannot grant continued access.
+    const subscriptions: string[] = ticket.streams.filter((id) => ownedIds.has(id));
 
+    // Issue 2: same intersection for user channels.
     const userSubscriptions = new Set<string>([`user:${publicKey}`]);
     for (const key of ticket.users.filter((k) => allowedUserKeys.has(k))) {
       userSubscriptions.add(`user:${key}`);
     }
     subscriptions.push(...userSubscriptions);
+
+    // Issue 1: read Last-Event-ID from the HTTP header.
+    const lastEventId = parseLastEventId(req);
 
     const clientId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 
@@ -135,7 +162,7 @@ export const subscribe = async (req: Request, res: Response) => {
 
     res.write(`data: ${JSON.stringify({ type: 'connected', clientId })}\n\n`);
 
-    sseService.addClient(clientId, res, subscriptions, sourceIp, publicKey);
+    sseService.addClient(clientId, res, subscriptions, sourceIp, publicKey, lastEventId);
     return;
   } catch (error: unknown) {
     if (error instanceof z.ZodError) {
