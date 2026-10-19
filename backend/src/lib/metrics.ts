@@ -227,6 +227,50 @@ export const sseMaxConnections = new Gauge({
   registers: [registry],
 });
 
+/**
+ * Issue 3: Total messages currently enqueued across all slow SSE consumers.
+ * A non-zero value means at least one client is behind on draining its TCP
+ * buffer. Alert when this exceeds a threshold relative to active connections.
+ */
+export const sseSlowConsumerQueueDepth = new Gauge({
+  name: 'flowfi_sse_slow_consumer_queue_depth',
+  help: 'Total messages pending in per-client backpressure queues across all SSE connections',
+  registers: [registry],
+});
+
+/**
+ * Issue 1: Current number of entries in the in-process SSE replay ring buffer.
+ * Allows operators to tune SSE_REPLAY_WINDOW_SIZE.
+ */
+export const sseReplayBufferSize = new Gauge({
+  name: 'flowfi_sse_replay_buffer_size',
+  help: 'Number of events currently held in the SSE in-process replay ring buffer',
+  registers: [registry],
+});
+
+/**
+ * Issue 4: Redis pub/sub reconnect attempts, labelled by outcome.
+ * A sustained failure rate means the SSE service is in single-instance
+ * degraded mode: events are still delivered locally but not cross-instance.
+ */
+export const sseRedisReconnectsTotal = new Counter({
+  name: 'flowfi_sse_redis_reconnects_total',
+  help: 'SSE Redis pub/sub reconnect attempts by outcome (success|failure)',
+  labelNames: ['outcome'] as const,
+  registers: [registry],
+});
+
+/**
+ * Issue 4: Events dropped by the SSE deduplication window.
+ * Non-zero on a reconnect-heavy broker is normal; a sustained rate without
+ * corresponding reconnects suggests duplicate publishing by the indexer.
+ */
+export const sseEventDeduplicatesTotal = new Counter({
+  name: 'flowfi_sse_event_deduplicates_total',
+  help: 'SSE events dropped as duplicate by the per-process deduplication window',
+  registers: [registry],
+});
+
 // ─── Soroban RPC ─────────────────────────────────────────────────────────────
 
 /** Wall-clock latency of every outbound Soroban RPC call, by method. */
