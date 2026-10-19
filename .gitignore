@@ -2,14 +2,28 @@ node_modules
 dist
 target
 .env
+.env.local
+.env.*.local
 .DS_Store
 coverage
 e2e-results
 *.log
 
-# Soroban test runner — auto-generated, never commit
+# Soroban / Rust — auto-generated, never commit
 **/test_snapshots/
+**/proptest-regressions/
 .npm-cache/
+**/*.wasm
+**/*.optimized.wasm
+deployment-info.json
+
+# Editor and OS artefacts
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+Thumbs.db
 
 # Scratch / draft markdown files — never commit
 fix.md

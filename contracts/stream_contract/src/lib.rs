@@ -415,6 +415,12 @@ impl StreamContract {
             return Err(StreamError::InvalidRate);
         }
 
+        // Dust handling (#23): floor division means net_amount % duration tokens
+        // would be permanently locked. Instead, compute the exact streamable
+        // amount and refund the dust to the sender immediately at creation time.
+        let dust = net_amount - rate_per_second * (duration as i128);
+        let streamable_amount = net_amount - dust;
+
         save_stream(
             &env,
             stream_id,
@@ -423,7 +429,7 @@ impl StreamContract {
                 recipient: recipient.clone(),
                 token_address: token_address.clone(),
                 rate_per_second,
-                deposited_amount: net_amount,
+                deposited_amount: streamable_amount,
                 withdrawn_amount: 0,
                 start_time,
                 last_update_time: start_time,
@@ -439,7 +445,17 @@ impl StreamContract {
             },
         );
 
-        Self::transfer_fee(&env, &token_address, stream_id, fee_amount, treasury);
+        Self::transfer_fee(&env, &token_address, stream_id, fee_amount, treasury, amount, net_amount);
+
+        // Refund dust to sender (silently, no new event) so deposited_amount
+        // equals exactly rate_per_second * duration and the stream fully drains.
+        if dust > 0 {
+            token::Client::new(&env, &token_address).transfer(
+                &env.current_contract_address(),
+                &sender,
+                &dust,
+            );
+        }
 
         emit_stream_created(
             &env,
@@ -449,7 +465,7 @@ impl StreamContract {
                 recipient,
                 rate_per_second,
                 token_address,
-                deposited_amount: net_amount,
+                deposited_amount: streamable_amount,
                 start_time,
             },
         );
@@ -556,6 +572,10 @@ impl StreamContract {
                 })
                 .transpose()?;
 
+            // Dust handling (#23): refund un-streamable residual to sender.
+            let dust = net_amount - rate_per_second * (input.duration as i128);
+            let streamable_amount = net_amount - dust;
+
             save_stream(
                 &env,
                 stream_id,
@@ -564,7 +584,7 @@ impl StreamContract {
                     recipient: input.recipient.clone(),
                     token_address: input.token_address.clone(),
                     rate_per_second,
-                    deposited_amount: net_amount,
+                    deposited_amount: streamable_amount,
                     withdrawn_amount: 0,
                     start_time,
                     last_update_time: start_time,
@@ -580,7 +600,16 @@ impl StreamContract {
                 },
             );
 
-            Self::transfer_fee(&env, &input.token_address, stream_id, fee_amount, treasury);
+            Self::transfer_fee(&env, &input.token_address, stream_id, fee_amount, treasury, input.amount, net_amount);
+
+            // Refund dust to sender silently.
+            if dust > 0 {
+                token::Client::new(&env, &input.token_address).transfer(
+                    &env.current_contract_address(),
+                    &sender,
+                    &dust,
+                );
+            }
 
             env.events().publish(
                 (Symbol::new(&env, "stream_created"), stream_id),
@@ -590,7 +619,7 @@ impl StreamContract {
                     recipient: input.recipient.clone(),
                     rate_per_second,
                     token_address: input.token_address.clone(),
-                    deposited_amount: net_amount,
+                    deposited_amount: streamable_amount,
                     start_time,
                 },
             );
@@ -649,6 +678,10 @@ impl StreamContract {
             return Err(StreamError::InvalidRate);
         }
 
+        // Dust handling (#23): refund un-streamable residual to sender.
+        let dust = net_amount - rate_per_second * (duration as i128);
+        let streamable_amount = net_amount - dust;
+
         save_stream(
             &env,
             stream_id,
@@ -657,7 +690,7 @@ impl StreamContract {
                 recipient: recipient.clone(),
                 token_address: token_address.clone(),
                 rate_per_second,
-                deposited_amount: net_amount,
+                deposited_amount: streamable_amount,
                 withdrawn_amount: 0,
                 start_time,
                 last_update_time: start_time,
@@ -677,7 +710,16 @@ impl StreamContract {
             },
         );
 
-        Self::transfer_fee(&env, &token_address, stream_id, fee_amount, treasury);
+        Self::transfer_fee(&env, &token_address, stream_id, fee_amount, treasury, amount, net_amount);
+
+        // Refund dust to sender silently.
+        if dust > 0 {
+            token::Client::new(&env, &token_address).transfer(
+                &env.current_contract_address(),
+                &sender,
+                &dust,
+            );
+        }
 
         env.events().publish(
             (Symbol::new(&env, "stream_created"), stream_id),
@@ -687,7 +729,7 @@ impl StreamContract {
                 recipient,
                 rate_per_second,
                 token_address,
-                deposited_amount: net_amount,
+                deposited_amount: streamable_amount,
                 start_time,
             },
         );
@@ -875,7 +917,7 @@ impl StreamContract {
             },
         );
 
-        Self::transfer_fee(&env, &token_address, stream_id, fee_amount, treasury);
+        Self::transfer_fee(&env, &token_address, stream_id, fee_amount, treasury, amount, net_amount);
 
         emit_step_vesting_stream_created(
             &env,
@@ -949,6 +991,12 @@ impl StreamContract {
             return Err(StreamError::InvalidCliffParameters);
         }
 
+        // Dust handling (#23): the linear tail uses floor division, so
+        // `linear_amount % linear_duration` tokens would never drain.
+        // Compute the exactly-streamable total and refund the linear dust.
+        let linear_dust = linear_amount - rate_per_second * (linear_duration as i128);
+        let streamable_amount = net_amount - linear_dust; // cliff portion unchanged
+
         save_stream(
             &env,
             stream_id,
@@ -957,7 +1005,7 @@ impl StreamContract {
                 recipient: recipient.clone(),
                 token_address: token_address.clone(),
                 rate_per_second,
-                deposited_amount: net_amount,
+                deposited_amount: streamable_amount,
                 withdrawn_amount: 0,
                 start_time,
                 last_update_time: start_time,
@@ -973,7 +1021,16 @@ impl StreamContract {
             },
         );
 
-        Self::transfer_fee(&env, &token_address, stream_id, fee_amount, treasury);
+        Self::transfer_fee(&env, &token_address, stream_id, fee_amount, treasury, amount, net_amount);
+
+        // Refund linear dust to sender silently.
+        if linear_dust > 0 {
+            token::Client::new(&env, &token_address).transfer(
+                &env.current_contract_address(),
+                &sender,
+                &linear_dust,
+            );
+        }
 
         emit_hybrid_cliff_stream_created(
             &env,
@@ -982,7 +1039,7 @@ impl StreamContract {
                 sender,
                 recipient,
                 token_address,
-                deposited_amount: net_amount,
+                deposited_amount: streamable_amount,
                 cliff_time,
                 cliff_unlock_amount,
                 rate_per_second,
@@ -1169,7 +1226,7 @@ impl StreamContract {
             &Vec::<BytesN<32>>::new(&env),
         );
 
-        Self::transfer_fee(&env, &token_address, stream_id, fee_amount, treasury);
+        Self::transfer_fee(&env, &token_address, stream_id, fee_amount, treasury, amount, net_amount);
 
         env.events().publish(
             (Symbol::new(&env, "stream_created"), stream_id),
@@ -1430,7 +1487,7 @@ impl StreamContract {
 
         save_stream(&env, stream_id, &stream);
 
-        Self::transfer_fee(&env, &stream.token_address, stream_id, fee_amount, treasury);
+        Self::transfer_fee(&env, &stream.token_address, stream_id, fee_amount, treasury, amount, net_amount);
 
         // Emit top-up event
         emit_stream_topped_up(
@@ -1638,12 +1695,26 @@ impl StreamContract {
             .ok_or(StreamError::ArithmeticOverflow)
     }
 
+    /// Returns `true` when a stream is in a terminal state (`Cancelled` or
+    /// `Completed`). Terminal streams cannot be reactivated, topped up, paused,
+    /// or modified in any way. (#21)
+    fn stream_is_terminal(stream: &Stream) -> bool {
+        matches!(
+            stream.status,
+            StreamStatus::Cancelled | StreamStatus::Completed
+        )
+    }
+
     /// Validate that a stream is active.
     ///
+    /// Checks both `is_active` and `status` to prevent inconsistent states
+    /// where one field is set but not the other. (#21/#22)
+    ///
     /// # Errors
-    /// - `StreamInactive` — stream has been cancelled or fully withdrawn.
+    /// - `StreamInactive` — stream has been cancelled, completed, or otherwise
+    ///   made inactive.
     fn validate_stream_active(stream: &Stream) -> Result<(), StreamError> {
-        if !stream.is_active {
+        if !stream.is_active || Self::stream_is_terminal(stream) {
             return Err(StreamError::StreamInactive);
         }
         Ok(())
@@ -2612,12 +2683,18 @@ impl StreamContract {
 
     /// Transfers the previously calculated fee after the caller has persisted
     /// all stream state changes for this operation.
+    ///
+    /// `gross_amount` is the amount before fee deduction; `net_amount` is what
+    /// the stream received. Both are included in the `FeeCollectedEvent` for
+    /// off-chain auditability (#24).
     fn transfer_fee(
         env: &Env,
         token_address: &Address,
         stream_id: u64,
         fee: i128,
         treasury: Option<Address>,
+        gross_amount: i128,
+        net_amount: i128,
     ) {
         if let Some(treasury) = treasury {
             let token_client = token::Client::new(env, token_address);
@@ -2629,6 +2706,8 @@ impl StreamContract {
                     treasury,
                     fee_amount: fee,
                     token: token_address.clone(),
+                    gross_amount,
+                    net_amount,
                 },
             );
         }

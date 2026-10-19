@@ -87,6 +87,12 @@ pub struct StreamCancelledEvent {
 /// Emitted when a protocol fee is collected during create or top-up.
 ///
 /// Topic: `("fee_collected", stream_id)`
+///
+/// # Auditability fields (#24)
+/// `gross_amount` is the amount passed into fee collection (before the fee is
+/// deducted). `net_amount` is what the stream actually receives (gross minus
+/// fee). Off-chain indexers can verify: `gross_amount * fee_rate_bps / 10_000
+/// == fee_amount` and `gross_amount - fee_amount == net_amount`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FeeCollectedEvent {
@@ -94,6 +100,10 @@ pub struct FeeCollectedEvent {
     pub treasury: Address,
     pub fee_amount: i128,
     pub token: Address,
+    /// Gross amount before fee deduction (i.e. `net_amount + fee_amount`).
+    pub gross_amount: i128,
+    /// Net amount credited to the stream after fee deduction.
+    pub net_amount: i128,
 }
 
 /// Emitted once during one-time protocol initialization.
