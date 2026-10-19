@@ -14,8 +14,9 @@ import type { BackendStream } from "./api-types";
 // ── dashboardQueryKey ───────────────────────────────────────────────────────
 
 describe("dashboardQueryKey", () => {
-  it("returns tuple of 'dashboard' and publicKey", () => {
-    expect(dashboardQueryKey("GCXYZ")).toEqual(["dashboard", "GCXYZ"]);
+  it("includes network and publicKey so cached reads cannot cross networks", () => {
+    expect(dashboardQueryKey("GCXYZ", "testnet")).toEqual(["dashboard", "testnet", "GCXYZ"]);
+    expect(dashboardQueryKey("GCXYZ", "mainnet")).not.toEqual(dashboardQueryKey("GCXYZ", "testnet"));
   });
 });
 

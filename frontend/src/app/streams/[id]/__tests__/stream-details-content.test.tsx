@@ -18,6 +18,10 @@ vi.mock("@/context/wallet-context", () => ({
   }),
 }));
 
+vi.mock("@/context/NetworkContext", () => ({
+  useNetwork: () => ({ networkId: "testnet" }),
+}));
+
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
 }));
@@ -77,6 +81,11 @@ vi.mock("@/hooks/useTokenPrice", () => ({
   useTokenPrice: () => ({ data: null, isLoading: false }),
   convertToFiat: () => 0,
   formatFiatAmount: (v: number) => `$${v.toFixed(2)}`,
+}));
+
+vi.mock("@/hooks/useTokenMetadata", () => ({
+  useTokenMetadata: () => ({ data: [] }),
+  getTokenDecimals: () => 7,
 }));
 
 // The shared ticking hook is exercised by its own suite

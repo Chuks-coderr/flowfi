@@ -3,6 +3,7 @@ import { sseService } from '../services/sse.service.js';
 import { prisma } from '../lib/prisma.js';
 import type { AuthenticatedRequest } from '../types/auth.types.js';
 import { z } from 'zod';
+import { getConfiguredStellarNetwork } from '../lib/stellar-network.js';
 import { signSseTicket, verifySseTicket } from '../middleware/auth.js';
 
 const subscribeSchema = z.object({
@@ -64,6 +65,13 @@ function getClientIp(req: Request): string {
   return req.ip || req.socket.remoteAddress || 'unknown';
 }
 export const subscribe = async (req: Request, res: Response) => {
+  if (req.query.network !== undefined && req.query.network !== getConfiguredStellarNetwork()) {
+    return res.status(409).json({
+      code: 'NETWORK_MISMATCH',
+      message: `This event stream serves ${getConfiguredStellarNetwork()}, not ${String(req.query.network)}.`,
+    });
+  }
+
   if (sseService.isShuttingDown()) {
     return res.status(503).json({ message: 'Server is shutting down, please reconnect shortly.' });
   }

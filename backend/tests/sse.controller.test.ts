@@ -49,6 +49,17 @@ describe('SSE Controller', () => {
     expect(res.status).toHaveBeenCalledWith(503);
   });
 
+  it('should reject subscriptions for a different configured Stellar network', async () => {
+    const configuredNetwork = process.env.STELLAR_NETWORK === 'mainnet' ? 'mainnet' : 'testnet';
+    req.query = { network: configuredNetwork === 'mainnet' ? 'testnet' : 'mainnet' };
+
+    await subscribe(req as Request, res as Response);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'NETWORK_MISMATCH' }));
+    expect(sseService.checkCapacity).not.toHaveBeenCalled();
+  });
+
   it('should return 503 if over capacity', async () => {
     (sseService.isShuttingDown as any).mockReturnValue(false);
     (sseService.checkCapacity as any).mockReturnValue({ allowed: false, status: 503, message: 'Too many connections' });

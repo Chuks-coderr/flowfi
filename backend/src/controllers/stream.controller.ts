@@ -21,6 +21,7 @@ import {
 } from "../repositories/streamEvent.repository.js";
 import { findStreams } from "../repositories/stream.repository.js";
 import { sendApiError } from "../types/api-error.js";
+import { getConfiguredStellarNetwork } from "../lib/stellar-network.js";
 
 const DEFAULT_STREAM_PAGE_SIZE = 20;
 const MAX_STREAM_PAGE_SIZE = 100;
@@ -198,6 +199,15 @@ export const createStream = async (req: Request, res: Response) => {
  */
 export const listStreams = async (req: Request, res: Response) => {
   try {
+    if (req.query.network !== undefined && req.query.network !== getConfiguredStellarNetwork()) {
+      return sendApiError(
+        res,
+        409,
+        "NETWORK_MISMATCH",
+        `This indexer serves ${getConfiguredStellarNetwork()}, not ${String(req.query.network)}.`,
+      );
+    }
+
     const {
       sender,
       recipient,
