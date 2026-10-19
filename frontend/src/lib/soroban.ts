@@ -1,5 +1,6 @@
 import type { WalletSession } from "@/lib/wallet";
 import { getNetworkConfig, type NetworkId } from "@/lib/stellar-config";
+import { formatAmount, parseAmountExact } from "@/utils/amount";
 
 function activeNetworkConfig() {
   const stored = typeof window === "undefined" ? null : window.localStorage.getItem("flowfi.network");
@@ -122,20 +123,21 @@ export function toDurationSeconds(value: string, unit: DurationUnit): bigint {
 }
 
 export function toBaseUnits(value: string, decimals = 7): bigint {
-  const parsed = parseFloat(value);
-  if (isNaN(parsed) || parsed <= 0) {
+  try {
+    const amount = parseAmountExact(value, decimals);
+    if (amount <= 0n) {
+      throw new Error("Amount must be a positive number.");
+    }
+    return amount;
+  } catch (error) {
+    if (error instanceof RangeError) throw error;
     throw new SorobanCallError("Amount must be a positive number.", "InvalidAmount");
   }
-  return BigInt(Math.round(parsed * 10 ** decimals));
 }
 
 export function fromBaseUnits(value: bigint | string, decimals = 7): string {
   const units = typeof value === "bigint" ? value : BigInt(value);
-  const divisor = BigInt(10) ** BigInt(decimals);
-  const whole = units / divisor;
-  const fraction = (units % divisor).toString().padStart(decimals, "0").replace(/0+$/, "");
-
-  return fraction.length > 0 ? `${whole}.${fraction}` : whole.toString();
+  return formatAmount(units, decimals);
 }
 
 export const TOKEN_ADDRESSES = {

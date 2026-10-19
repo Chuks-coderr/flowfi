@@ -69,12 +69,15 @@ describe('SSE Controller', () => {
     expect(res.status).toHaveBeenCalledWith(503);
   });
 
-  it('should return 401 if ticket is missing', async () => {
-    (sseService.isShuttingDown as any).mockReturnValue(false);
+  it('should reject subscriptions for a different configured Stellar network', async () => {
+    const configuredNetwork = process.env.STELLAR_NETWORK === 'mainnet' ? 'mainnet' : 'testnet';
+    req.query = { network: configuredNetwork === 'mainnet' ? 'testnet' : 'mainnet' };
 
     await subscribe(req as Request, res as Response);
 
-    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'NETWORK_MISMATCH' }));
+    expect(sseService.checkCapacity).not.toHaveBeenCalled();
   });
 
   it('should return 503 if over capacity', async () => {
